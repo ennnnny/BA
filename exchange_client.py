@@ -1,6 +1,7 @@
 import ccxt.async_support as ccxt
 import os
 import logging
+from typing import Optional, Dict, List, Any, Union
 from config import SYMBOL, DEBUG_MODE, API_TIMEOUT, RECV_WINDOW
 from datetime import datetime
 import time
@@ -212,7 +213,7 @@ class ExchangeClient:
         symbol: str,
         side: str,          # 只能是 'buy' 或 'sell'
         amount: float,
-        params: dict | None = None
+        params: Optional[dict] = None
     ):
         """
         业务层需要的『市价单快捷封装』。
