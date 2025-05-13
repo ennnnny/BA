@@ -86,16 +86,33 @@ def send_ntfy_message(content, title="交易信号通知", topic=NTFY_TOPIC, pri
         return False
     
     url = f"{topic}"
+    
+    # 处理头部，确保所有头部值都是ASCII兼容的
+    def ensure_ascii(text):
+        if isinstance(text, str):
+            # 尝试ASCII编码，如果失败则使用ASCII转义序列表示
+            try:
+                text.encode('ascii')
+                return text
+            except UnicodeEncodeError:
+                # 转换为ASCII兼容的字符串
+                return text.encode('ascii', 'backslashreplace').decode('ascii')
+        return text
+    
+    # 构建头部，确保所有值都是ASCII兼容的
     headers = {
-        "Title": title,
+        "Title": ensure_ascii(title),
         "Priority": priority,
     }
     
     if tags:
         if isinstance(tags, list):
-            headers["Tags"] = ",".join(tags)
+            # 确保列表中的每个标签都是ASCII兼容的
+            ascii_tags = [ensure_ascii(tag) for tag in tags]
+            headers["Tags"] = ",".join(ascii_tags)
         else:
-            headers["Tags"] = tags
+            # 确保字符串形式的标签是ASCII兼容的
+            headers["Tags"] = ensure_ascii(tags)
     
     # 如果配置了认证令牌
     if NTFY_TOKEN:
@@ -103,14 +120,18 @@ def send_ntfy_message(content, title="交易信号通知", topic=NTFY_TOPIC, pri
     
     try:
         logging.info(f"正在发送ntfy通知: {title}")
+        # 内容可以保持UTF-8编码，因为它在消息体中
         response = requests.post(url, data=content.encode('utf-8'), headers=headers, timeout=timeout)
         
         if response.status_code == 200:
             logging.info(f"ntfy消息推送成功: {content}")
+            return True
         else:
             logging.error(f"ntfy消息推送失败: 状态码={response.status_code}, 响应={response.text}")
+            return False
     except Exception as e:
         logging.error(f"ntfy消息推送异常: {str(e)}", exc_info=True)
+        return False
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def safe_fetch(method, *args, **kwargs):
