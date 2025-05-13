@@ -96,6 +96,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.history
 
 # Spyder project settings
 .spyderproject

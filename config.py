@@ -43,6 +43,11 @@ except ValueError:
     INITIAL_PRINCIPAL = 0
     logging.warning("无效的INITIAL_PRINCIPAL配置，已重置为0")
 
+# ntfy配置
+NTFY_TOPIC = os.getenv('NTFY_TOPIC', '')  # 默认为空，需要用户配置
+NTFY_TOKEN = os.getenv('NTFY_TOKEN', '')  # 可选的认证令牌
+NTFY_TIMEOUT = 5  # ntfy请求超时时间（秒）
+
 class TradingConfig:
     RISK_PARAMS = {
         'max_drawdown': MAX_DRAWDOWN,

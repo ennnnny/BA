@@ -1,7 +1,7 @@
 import logging
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
-from config import PUSHPLUS_TOKEN, PUSHPLUS_TIMEOUT
+from config import PUSHPLUS_TOKEN, PUSHPLUS_TIMEOUT, NTFY_TOPIC, NTFY_TOKEN, NTFY_TIMEOUT
 import time
 import psutil
 import os
@@ -69,6 +69,48 @@ def send_pushplus_message(content, title="交易信号通知", timeout=PUSHPLUS_
             logging.error(f"消息推送失败: 状态码={response.status_code}, 响应={response_json}")
     except Exception as e:
         logging.error(f"消息推送异常: {str(e)}", exc_info=True)
+
+def send_ntfy_message(content, title="交易信号通知", topic=NTFY_TOPIC, priority="default", tags=None, timeout=NTFY_TIMEOUT):
+    """通过ntfy发送通知消息
+    
+    Args:
+        content (str): 消息内容
+        title (str): 消息标题，默认为"交易信号通知"
+        topic (str): ntfy主题，默认使用NTFY_TOPIC配置
+        priority (str): 消息优先级（urgent, high, default, low, min），默认为default
+        tags (list or str): 消息标签，可以是列表或逗号分隔的字符串
+        timeout (int): 请求超时时间，默认使用NTFY_TIMEOUT配置
+    """
+    if not topic:
+        logging.error("未配置NTFY_TOPIC，无法发送通知")
+        return False
+    
+    url = f"{topic}"
+    headers = {
+        "Title": title,
+        "Priority": priority,
+    }
+    
+    if tags:
+        if isinstance(tags, list):
+            headers["Tags"] = ",".join(tags)
+        else:
+            headers["Tags"] = tags
+    
+    # 如果配置了认证令牌
+    if NTFY_TOKEN:
+        headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
+    
+    try:
+        logging.info(f"正在发送ntfy通知: {title}")
+        response = requests.post(url, data=content.encode('utf-8'), headers=headers, timeout=timeout)
+        
+        if response.status_code == 200:
+            logging.info(f"ntfy消息推送成功: {content}")
+        else:
+            logging.error(f"ntfy消息推送失败: 状态码={response.status_code}, 响应={response.text}")
+    except Exception as e:
+        logging.error(f"ntfy消息推送异常: {str(e)}", exc_info=True)
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def safe_fetch(method, *args, **kwargs):
