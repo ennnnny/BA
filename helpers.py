@@ -87,32 +87,34 @@ def send_ntfy_message(content, title="交易信号通知", topic=NTFY_TOPIC, pri
     
     url = f"{topic}"
     
-    # 处理头部，确保所有头部值都是ASCII兼容的
-    def ensure_ascii(text):
+    # 处理头部，确保所有头部值都是RFC 2047兼容的
+    def encode_header(text):
+        import base64
         if isinstance(text, str):
-            # 尝试ASCII编码，如果失败则使用ASCII转义序列表示
+            # 尝试ASCII编码，如果失败则使用RFC 2047 base64编码
             try:
                 text.encode('ascii')
                 return text
             except UnicodeEncodeError:
-                # 转换为ASCII兼容的字符串
-                return text.encode('ascii', 'backslashreplace').decode('ascii')
+                # 使用RFC 2047 base64编码，适用于HTTP头部的UTF-8字符
+                # 格式: =?UTF-8?B?<base64 encoded string>?=
+                encoded = base64.b64encode(text.encode('utf-8')).decode('ascii')
+                return f"=?UTF-8?B?{encoded}?="
         return text
     
-    # 构建头部，确保所有值都是ASCII兼容的
+    # 构建头部，确保所有值都使用RFC 2047编码的中文
     headers = {
-        "Title": ensure_ascii(title),
+        "Title": encode_header(title),
         "Priority": priority,
     }
     
     if tags:
         if isinstance(tags, list):
-            # 确保列表中的每个标签都是ASCII兼容的
-            ascii_tags = [ensure_ascii(tag) for tag in tags]
-            headers["Tags"] = ",".join(ascii_tags)
+            # 确保列表中的每个标签都正确编码
+            headers["Tags"] = ",".join(tags)
         else:
-            # 确保字符串形式的标签是ASCII兼容的
-            headers["Tags"] = ensure_ascii(tags)
+            # 确保字符串形式的标签正确编码
+            headers["Tags"] = tags
     
     # 如果配置了认证令牌
     if NTFY_TOKEN:
