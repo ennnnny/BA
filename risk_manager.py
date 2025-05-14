@@ -17,6 +17,46 @@ class AdvancedRiskManager:
         self.pending_recovery_amount = 0
         self.pending_recovery_target_price = 0
         self.pending_recovery_price_expiry = 0
+        
+        # 添加技术指标缓存和更新时间记录
+        self.indicator_cache = {
+            # RSI缓存
+            'rsi_4h': {'value': None, 'last_update': 0},
+            'rsi_1d': {'value': None, 'last_update': 0},
+            # 布林带缓存
+            'bb_4h': {'value': (None, None, None), 'last_update': 0},
+            'bb_1d': {'value': (None, None, None), 'last_update': 0},
+            # 支撑位缓存
+            'support_levels': {'value': [], 'last_update': 0},
+            # MA数据缓存
+            'ma_data': {'value': (None, None), 'last_update': 0},
+            # MACD数据缓存
+            'macd_data': {'value': (None, None), 'last_update': 0},
+            # 价格分位数缓存
+            'price_percentile': {'value': None, 'last_update': 0},
+            # 短期趋势缓存
+            'short_trend': {'value': (0, None), 'last_update': 0},
+            # K线数据缓存
+            'klines_1h': {'value': None, 'last_update': 0},
+            'klines_4h': {'value': None, 'last_update': 0},
+            'klines_1d': {'value': None, 'last_update': 0},
+        }
+        
+        # 设置不同指标的更新间隔（秒）
+        self.update_intervals = {
+            'rsi_4h': 15 * 60,  # 15分钟
+            'rsi_1d': 60 * 60,  # 1小时
+            'bb_4h': 15 * 60,   # 15分钟
+            'bb_1d': 60 * 60,   # 1小时
+            'support_levels': 4 * 60 * 60,  # 4小时
+            'ma_data': 60 * 60,  # 1小时
+            'macd_data': 60 * 60,  # 1小时
+            'price_percentile': 4 * 60 * 60,  # 4小时
+            'short_trend': 15 * 60,  # 15分钟
+            'klines_1h': 5 * 60,  # 5分钟
+            'klines_4h': 15 * 60,  # 15分钟
+            'klines_1d': 60 * 60,  # 1小时
+        }
     
     async def multi_layer_check(self):
         try:
@@ -71,24 +111,28 @@ class AdvancedRiskManager:
             self.logger.error(f"风控检查失败: {str(e)}")
             return False
 
-    async def _calculate_rsi(self, period=14, timeframe='4h'):
+    async def _calculate_rsi(self, period=14, timeframe='4h', klines=None):
         """
         计算当前RSI值
         
         Args:
             period: RSI计算周期，默认14
             timeframe: K线时间周期，默认4小时
+            klines: 可选的K线数据，如果提供则使用，否则获取
             
         Returns:
             float: RSI值(0-100)，如果计算失败则返回50
         """
+        indicator_key = f'rsi_{timeframe}'
+        
+        # 检查缓存是否需要更新
+        if not klines and not await self._should_update_indicator(indicator_key):
+            return self.indicator_cache[indicator_key]['value']
+            
         try:
-            # 获取历史K线数据
-            klines = await self.trader.exchange.fetch_ohlcv(
-                self.trader.symbol,
-                timeframe=timeframe,
-                limit=period*2  # 获取足够的数据以计算RSI
-            )
+            # 如果没有提供K线数据，则获取
+            if not klines:
+                klines = await self._get_klines_data(timeframe, period*2, force_update=False)
             
             if not klines or len(klines) < period+1:
                 self.logger.warning(f"计算RSI失败: 获取的K线数据不足 ({len(klines) if klines else 0} < {period+1})")
@@ -118,21 +162,27 @@ class AdvancedRiskManager:
             
             # 计算相对强度RS
             if avg_loss == 0:
-                return 100  # 避免除以零
-                
-            rs = avg_gain / avg_loss
+                rsi = 100  # 避免除以零
+            else:
+                rs = avg_gain / avg_loss
+                # 计算RSI
+                rsi = 100 - (100 / (1 + rs))
             
-            # 计算RSI
-            rsi = 100 - (100 / (1 + rs))
+            self.logger.debug(f"RSI({period}, {timeframe}): {rsi:.2f}")
             
-            self.logger.debug(f"RSI({period}): {rsi:.2f}")
+            # 更新缓存
+            self.indicator_cache[indicator_key] = {
+                'value': rsi,
+                'last_update': time.time()
+            }
+            
             return rsi
             
         except Exception as e:
             self.logger.error(f"计算RSI失败: {str(e)}")
             return 50  # 返回中性RSI值
 
-    async def _calculate_bollinger_bands(self, period=20, deviation=2, timeframe='4h'):
+    async def _calculate_bollinger_bands(self, period=20, deviation=2, timeframe='4h', klines=None):
         """
         计算布林带上中下轨
         
@@ -140,18 +190,22 @@ class AdvancedRiskManager:
             period: 移动平均周期，默认20
             deviation: 标准差倍数，默认2
             timeframe: K线时间周期，默认4小时
+            klines: 可选的K线数据，如果提供则使用，否则获取
             
         Returns:
             tuple: (upper, middle, lower) 布林带上中下轨
                   如果计算失败则返回(None, None, None)
         """
+        indicator_key = f'bb_{timeframe}'
+        
+        # 检查缓存是否需要更新
+        if not klines and not await self._should_update_indicator(indicator_key):
+            return self.indicator_cache[indicator_key]['value']
+            
         try:
-            # 获取历史K线数据
-            klines = await self.trader.exchange.fetch_ohlcv(
-                self.trader.symbol,
-                timeframe=timeframe,
-                limit=period+10  # 获取足够的数据
-            )
+            # 如果没有提供K线数据，则获取
+            if not klines:
+                klines = await self._get_klines_data(timeframe, period+10, force_update=False)
             
             if not klines or len(klines) < period:
                 self.logger.warning(f"计算布林带失败: 获取的K线数据不足 ({len(klines) if klines else 0} < {period})")
@@ -172,7 +226,7 @@ class AdvancedRiskManager:
             
             current_price = await self.trader._get_latest_price()
             self.logger.debug(
-                f"布林带(周期={period}, 偏差={deviation}): "
+                f"布林带(周期={period}, 偏差={deviation}, {timeframe}): "
                 f"上轨={upper:.2f}, "
                 f"中轨={middle:.2f}, "
                 f"下轨={lower:.2f}, "
@@ -180,30 +234,40 @@ class AdvancedRiskManager:
                 f"位置={(current_price-lower)/(upper-lower) if upper != lower else 0.5:.2f}"
             )
             
+            # 更新缓存
+            self.indicator_cache[indicator_key] = {
+                'value': (upper, middle, lower),
+                'last_update': time.time()
+            }
+            
             return upper, middle, lower
             
         except Exception as e:
             self.logger.error(f"计算布林带失败: {str(e)}")
             return None, None, None
 
-    async def _get_support_levels(self, timeframe='1d', lookback=90):
+    async def _get_support_levels(self, timeframe='1d', lookback=90, klines=None):
         """
         获取市场关键支撑位
         
         Args:
             timeframe: K线时间周期，默认1天
             lookback: 回溯周期数，默认90
+            klines: 可选的K线数据，如果提供则使用，否则获取
             
         Returns:
             list: 支撑位价格列表，按价格从低到高排序
         """
+        indicator_key = 'support_levels'
+        
+        # 检查缓存是否需要更新
+        if not klines and not await self._should_update_indicator(indicator_key):
+            return self.indicator_cache[indicator_key]['value']
+            
         try:
-            # 获取历史K线数据
-            klines = await self.trader.exchange.fetch_ohlcv(
-                self.trader.symbol,
-                timeframe=timeframe,
-                limit=lookback  # 获取足够的数据用于分析
-            )
+            # 如果没有提供K线数据，则获取
+            if not klines:
+                klines = await self._get_klines_data(timeframe, lookback, force_update=False)
             
             if not klines or len(klines) < 20:  # 至少需要20根K线
                 self.logger.warning(f"获取支撑位失败: 获取的K线数据不足 ({len(klines) if klines else 0} < 20)")
@@ -272,6 +336,12 @@ class AdvancedRiskManager:
             else:
                 self.logger.debug(f"未找到有效支撑位")
                 
+            # 更新缓存
+            self.indicator_cache[indicator_key] = {
+                'value': valid_supports,
+                'last_update': time.time()
+            }
+                
             return valid_supports
             
         except Exception as e:
@@ -297,6 +367,11 @@ class AdvancedRiskManager:
             current_price = await self.trader._get_latest_price()
             if not current_price:
                 return 0, {'error': '无法获取当前价格'}, None
+                
+            # 批量预获取K线数据，减少API请求
+            await self._get_klines_data('4h', 50, force_update=False)  # 用于RSI和布林带
+            await self._get_klines_data('1d', 90, force_update=False)  # 用于日线指标和支撑位
+            await self._get_klines_data('1h', 24, force_update=False)  # 用于短期趋势
                 
             # 1. 计算RSI，检查是否超卖 (14周期，4小时和1天两个周期)
             rsi_4h = await self._calculate_rsi(period=14, timeframe='4h')
@@ -377,7 +452,17 @@ class AdvancedRiskManager:
                 
             # 4. 获取MA交叉信号
             try:
-                short_ma, long_ma = await self.trader.get_ma_data(short_period=20, long_period=50)
+                # 检查MA数据缓存是否需要更新
+                if await self._should_update_indicator('ma_data'):
+                    short_ma, long_ma = await self.trader.get_ma_data(short_period=20, long_period=50)
+                    # 更新缓存
+                    self.indicator_cache['ma_data'] = {
+                        'value': (short_ma, long_ma),
+                        'last_update': time.time()
+                    }
+                else:
+                    # 使用缓存数据
+                    short_ma, long_ma = self.indicator_cache['ma_data']['value']
                 
                 if short_ma and long_ma:
                     if short_ma > long_ma:  # 金叉形态，短期均线在长期均线之上
@@ -388,12 +473,23 @@ class AdvancedRiskManager:
                         details['ma_cross'] = f"死叉形态，MA20 ({short_ma:.1f}) < MA50 ({long_ma:.1f})"
                 else:
                     details['ma_cross'] = "无法获取MA数据"
-            except Exception:
+            except Exception as e:
+                self.logger.error(f"计算MA数据失败: {e}")
                 details['ma_cross'] = "计算MA数据失败"
                 
             # 5. 获取MACD信号
             try:
-                macd_line, signal_line = await self.trader.get_macd_data()
+                # 检查MACD数据缓存是否需要更新
+                if await self._should_update_indicator('macd_data'):
+                    macd_line, signal_line = await self.trader.get_macd_data()
+                    # 更新缓存
+                    self.indicator_cache['macd_data'] = {
+                        'value': (macd_line, signal_line),
+                        'last_update': time.time()
+                    }
+                else:
+                    # 使用缓存数据
+                    macd_line, signal_line = self.indicator_cache['macd_data']['value']
                 
                 if macd_line is not None and signal_line is not None:
                     if macd_line > signal_line:  # MACD金叉，买入信号
@@ -403,12 +499,23 @@ class AdvancedRiskManager:
                         details['macd'] = f"MACD死叉 ({macd_line:.4f} < {signal_line:.4f})"
                 else:
                     details['macd'] = "无法获取MACD数据"
-            except Exception:
+            except Exception as e:
+                self.logger.error(f"计算MACD数据失败: {e}")
                 details['macd'] = "计算MACD数据失败"
                 
             # 6. 价格分位检查
             try:
-                price_percentile = await self.trader._get_price_percentile()
+                # 检查价格分位数缓存是否需要更新
+                if await self._should_update_indicator('price_percentile'):
+                    price_percentile = await self.trader._get_price_percentile()
+                    # 更新缓存
+                    self.indicator_cache['price_percentile'] = {
+                        'value': price_percentile,
+                        'last_update': time.time()
+                    }
+                else:
+                    # 使用缓存数据
+                    price_percentile = self.indicator_cache['price_percentile']['value']
                 
                 if price_percentile <= 0.3:  # 价格处于30%分位数以下，较好的买入位置
                     support_score += 15
@@ -418,36 +525,46 @@ class AdvancedRiskManager:
                     details['price_percentile'] = f"价格处于中低位 ({price_percentile:.2f})"
                 else:
                     details['price_percentile'] = f"价格处于高位 ({price_percentile:.2f})"
-            except Exception:
+            except Exception as e:
+                self.logger.error(f"计算价格分位失败: {e}")
                 details['price_percentile'] = "价格分位计算失败"
                 
             # 7. 短期趋势检查
             short_term_trend = 0
             
             try:
-                klines = await self.trader.exchange.fetch_ohlcv(
-                    self.trader.symbol,
-                    timeframe='1h',
-                    limit=24  # 最近24小时
-                )
-                
-                if klines and len(klines) >= 24:
-                    # 提取收盘价
-                    closes = [float(kline[4]) for kline in klines]
+                # 检查短期趋势缓存是否需要更新
+                if await self._should_update_indicator('short_trend'):
+                    # 使用已缓存的K线数据
+                    klines = await self._get_klines_data('1h', 24, force_update=False)
                     
-                    # 简单计算短期趋势(24小时价格变化)
-                    price_change = (closes[-1] - closes[0]) / closes[0]
-                    
-                    if price_change < -0.05:  # 短期下跌超过5%
-                        details['short_trend'] = f"短期下跌趋势 ({price_change:.2%})"
-                    elif price_change > 0.05:  # 短期上涨超过5%
-                        details['short_trend'] = f"短期上涨趋势 ({price_change:.2%})"
-                        short_term_trend = -10  # 短期上涨过快，可能不是好的买入时机
+                    if klines and len(klines) >= 24:
+                        # 提取收盘价
+                        closes = [float(kline[4]) for kline in klines]
+                        
+                        # 简单计算短期趋势(24小时价格变化)
+                        price_change = (closes[-1] - closes[0]) / closes[0]
+                        
+                        # 更新缓存
+                        self.indicator_cache['short_trend'] = {
+                            'value': (price_change, closes[-1]),
+                            'last_update': time.time()
+                        }
                     else:
-                        details['short_trend'] = f"短期横盘整理 ({price_change:.2%})"
+                        price_change = 0
                 else:
-                    details['short_trend'] = "无法获取短期趋势数据"
-            except Exception:
+                    # 使用缓存数据
+                    price_change, _ = self.indicator_cache['short_trend']['value']
+                
+                if price_change < -0.05:  # 短期下跌超过5%
+                    details['short_trend'] = f"短期下跌趋势 ({price_change:.2%})"
+                elif price_change > 0.05:  # 短期上涨超过5%
+                    details['short_trend'] = f"短期上涨趋势 ({price_change:.2%})"
+                    short_term_trend = -10  # 短期上涨过快，可能不是好的买入时机
+                else:
+                    details['short_trend'] = f"短期横盘整理 ({price_change:.2%})"
+            except Exception as e:
+                self.logger.error(f"计算短期趋势失败: {e}")
                 details['short_trend'] = "短期趋势计算失败"
                 
             # 综合计算最终得分 (0-100)
@@ -918,4 +1035,79 @@ class AdvancedRiskManager:
             elif fear_greed > 80:  # 极度贪婪
                 self.trader.config.RISK_FACTOR *= 1.2  # 提高风险系数
         except Exception as e:
-            self.logger.error(f"获取市场情绪失败: {str(e)}") 
+            self.logger.error(f"获取市场情绪失败: {str(e)}")
+
+    async def _get_klines_data(self, timeframe, limit, force_update=False):
+        """
+        获取并缓存K线数据的辅助方法
+        
+        Args:
+            timeframe: K线时间周期，如'1h', '4h', '1d'
+            limit: 需要获取的K线数量
+            force_update: 是否强制更新，忽略缓存
+            
+        Returns:
+            list: K线数据列表
+        """
+        cache_key = f'klines_{timeframe}'
+        
+        # 检查缓存是否存在且未过期
+        current_time = time.time()
+        if (not force_update and 
+            cache_key in self.indicator_cache and 
+            self.indicator_cache[cache_key]['value'] is not None and 
+            len(self.indicator_cache[cache_key]['value']) >= limit and
+            current_time - self.indicator_cache[cache_key]['last_update'] < self.update_intervals.get(cache_key, 300)):
+            
+            # 返回缓存的数据，并确保数量正确
+            return self.indicator_cache[cache_key]['value'][-limit:]
+        
+        try:
+            # 获取比请求更多的数据，以备后续使用
+            fetch_limit = max(limit * 2, 200)  # 获取足够的数据
+            
+            # 发送API请求获取K线数据
+            klines = await self.trader.exchange.fetch_ohlcv(
+                self.trader.symbol,
+                timeframe=timeframe,
+                limit=fetch_limit
+            )
+            
+            if not klines or len(klines) < limit:
+                self.logger.warning(f"获取K线数据失败: 获取的K线数据不足 ({len(klines) if klines else 0} < {limit})")
+                # 如果有缓存，返回缓存
+                if cache_key in self.indicator_cache and self.indicator_cache[cache_key]['value'] is not None:
+                    return self.indicator_cache[cache_key]['value'][-limit:]
+                return []
+            
+            # 更新缓存
+            self.indicator_cache[cache_key] = {
+                'value': klines,
+                'last_update': current_time
+            }
+            
+            return klines[-limit:]
+            
+        except Exception as e:
+            self.logger.error(f"获取K线数据失败: {str(e)}")
+            # 如果有缓存，返回缓存
+            if cache_key in self.indicator_cache and self.indicator_cache[cache_key]['value'] is not None:
+                return self.indicator_cache[cache_key]['value'][-limit:]
+            return []
+            
+    async def _should_update_indicator(self, indicator_key):
+        """
+        检查指标是否需要更新
+        
+        Args:
+            indicator_key: 指标缓存键名
+            
+        Returns:
+            bool: 是否需要更新
+        """
+        current_time = time.time()
+        if (indicator_key not in self.indicator_cache or 
+            self.indicator_cache[indicator_key]['value'] is None or 
+            current_time - self.indicator_cache[indicator_key]['last_update'] >= self.update_intervals.get(indicator_key, 300)):
+            return True
+        return False 
