@@ -5,6 +5,7 @@ import aiofiles
 import logging
 from datetime import datetime
 import psutil
+import time
 
 class IPLogger:
     def __init__(self):
@@ -219,6 +220,10 @@ async def handle_log(request):
                                 {system_stats['memory_used']}GB / {system_stats['memory_total']}GB
                             </div>
                         </div>
+                        <div class="p-4 bg-gray-50 rounded-lg col-span-2">
+                            <div class="text-sm text-gray-600">系统运行时间</div>
+                            <div class="text-xl font-bold mt-1" id="system-uptime">--</div>
+                        </div>
                     </div>
                 </div>
 
@@ -350,6 +355,9 @@ async def handle_log(request):
                         document.querySelector('#target-order-amount').textContent = 
                             data.target_order_amount ? data.target_order_amount.toFixed(2) + ' USDT' : '--';
                         
+                        // 更新系统运行时间
+                        document.querySelector('#system-uptime').textContent = data.uptime;
+                        
                         console.log('状态更新成功:', data);
                     }} catch (error) {{
                         console.error('更新状态失败:', error);
@@ -399,6 +407,13 @@ async def handle_status(request):
              except Exception as band_e:
                  logging.warning(f"计算网格上下轨失败: {band_e}")
         
+        # 计算系统运行时间
+        current_time = time.time()
+        uptime_seconds = int(current_time - trader.start_time)
+        days, remainder = divmod(uptime_seconds, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{days}天 {hours}小时 {minutes}分钟 {seconds}秒"
         
         # 计算总资产
         bnb_balance = float(balance['total'].get('BNB', 0))
@@ -464,7 +479,9 @@ async def handle_status(request):
             "position_percentage": position_percentage,
             # ---> 新增：添加上下轨到响应数据 <---
             "grid_upper_band": upper_band,
-            "grid_lower_band": lower_band
+            "grid_lower_band": lower_band,
+            "uptime": uptime_str, # 添加运行时间字符串
+            "uptime_seconds": uptime_seconds # 添加运行时间秒数用于计算
         }
         
         return web.json_response(status)
