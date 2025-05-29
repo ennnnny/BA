@@ -240,12 +240,20 @@ class GridTrader:
             )
             
             # 发送通知
-            send_pushplus_message(
-                f"基准价自动修正\n"
+            # send_pushplus_message(
+            #     f"基准价自动修正\n"
+            #     f"原因: 仓位过低 ({position_ratio:.2%} < {self.config.MIN_POSITION_RATIO:.2%})\n"
+            #     f"旧基准价: {old_base_price:.2f}\n"
+            #     f"新基准价: {current_price:.2f}",
+            #     "系统通知"
+            # )
+            send_ntfy_message(
+                content=f"基准价自动修正\n"
                 f"原因: 仓位过低 ({position_ratio:.2%} < {self.config.MIN_POSITION_RATIO:.2%})\n"
                 f"旧基准价: {old_base_price:.2f}\n"
                 f"新基准价: {current_price:.2f}",
-                "系统通知"
+                title="系统通知",
+                tags="warning"
             )
             
             return False  # 不触发卖出信号
