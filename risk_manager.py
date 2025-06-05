@@ -70,6 +70,7 @@ class AdvancedRiskManager:
         }
     
     async def multi_layer_check(self):
+        self.logger.info("▶ 风控检查")
         try:
             # 使用状态锁保护共享状态
             async with self.state_lock:

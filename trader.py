@@ -190,6 +190,7 @@ class GridTrader:
         return self.base_price * (1 - self.grid_size / 100)
     
     async def _check_buy_signal(self):
+        self.logger.info("▶ 买入检测")
         current_price = self.current_price
         if current_price <= self._get_lower_band():
             self.buying_or_selling = True    # 进入买入或卖出监测
@@ -220,6 +221,7 @@ class GridTrader:
         return False
     
     async def _check_sell_signal(self):
+        self.logger.info("▶ 卖出检测")
         current_price = self.current_price
         initial_upper_band = self._get_upper_band()  # 初始上轨价格
         
