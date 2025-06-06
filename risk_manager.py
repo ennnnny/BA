@@ -74,7 +74,7 @@ class AdvancedRiskManager:
         }
     
     async def multi_layer_check(self):
-        self.logger.info("▶ 风控检查")
+        # self.logger.info("▶ 风控检查")
         try:
             # 使用状态锁保护共享状态
             async with self.state_lock:
@@ -94,35 +94,10 @@ class AdvancedRiskManager:
                     )
                     self.last_position_ratio = position_ratio
                     
-                # 如果仓位已经恢复到目标值但还有待执行的买入任务，取消它
-                if position_ratio >= self.trader.config.MIN_POSITION_RATIO and self.pending_recovery:
-                    self.logger.info(f"仓位已恢复至 {position_ratio:.2%}，取消待执行的买入任务")
-                    self.pending_recovery = False
-                
                 if position_ratio < self.trader.config.MIN_POSITION_RATIO:
                     self.logger.warning(f"底仓保护触发 | 当前: {position_ratio:.2%}")
                     
-                    # 检查是否在冷却期内
-                    current_time = time.time()
-                    if current_time < self.recovery_cooldown_until:
-                        cooldown_remaining = int(self.recovery_cooldown_until - current_time)
-                        self.logger.info(f"底仓恢复操作在冷却期内，还需等待 {cooldown_remaining} 秒")
-                        
-                        # 修改：将待定任务检查放入异步任务，不阻塞主流程
-                        if self.pending_recovery and current_time < self.pending_recovery_price_expiry:
-                            if cooldown_remaining < 300:  # 冷却期剩余不到5分钟
-                                # 创建异步任务检查并执行待定的买入任务，不等待其完成
-                                asyncio.create_task(self._safe_check_pending_recovery())
-                                self.logger.info(f"已创建异步任务检查待执行买入任务")
-                            else:
-                                self.logger.info(f"待执行买入任务暂停执行，等待冷却期结束或接近结束")
-                    else:
-                        # 当仓位低于最小值时，尝试恢复底仓
-                        recovery_result = await self.recover_min_position(position_ratio)
-                        if recovery_result:
-                            self.logger.info("底仓恢复操作已执行，等待下一次检查")
-                        else:
-                            self.logger.warning("底仓恢复操作失败，将在下次检查时重试")
+                    asyncio.create_task(self._safe_check_pending_recovery_main())
                     
                     return True
                 
@@ -1653,9 +1628,43 @@ class AdvancedRiskManager:
         确保即使出现异常也不会影响主流程
         """
         try:
-            # 设置执行超时，防止长时间阻塞
-            result = await asyncio.wait_for(self._check_pending_recovery(), timeout=120)
-            return result
+            current_time = time.time()
+            position_ratio = await self._get_position_ratio()
+            # 如果仓位已经恢复到目标值但还有待执行的买入任务，取消它
+            if position_ratio >= self.trader.config.MIN_POSITION_RATIO and self.pending_recovery:
+                self.logger.info(f"仓位已恢复至 {position_ratio:.2%}，取消待执行的买入任务")
+                self.pending_recovery = False
+
+            if current_time < self.recovery_cooldown_until:
+                cooldown_remaining = int(self.recovery_cooldown_until - current_time)
+                self.logger.info(f"底仓恢复操作在冷却期内，还需等待 {cooldown_remaining} 秒")
+                
+                # 修改：将待定任务检查放入异步任务，不阻塞主流程
+                if self.pending_recovery and current_time < self.pending_recovery_price_expiry:
+                    if cooldown_remaining < 300:  # 冷却期剩余不到5分钟
+                        # 创建异步任务检查并执行待定的买入任务，不等待其完成
+                        await self._check_pending_recovery()
+                        self.logger.info(f"已创建异步任务检查待执行买入任务")
+                    else:
+                        self.logger.info(f"待执行买入任务暂停执行，等待冷却期结束或接近结束")
+            else:
+                # 当仓位低于最小值时，尝试恢复底仓
+                recovery_result = await self.recover_min_position(position_ratio)
+                if recovery_result:
+                    self.logger.info("底仓恢复操作已执行，等待下一次检查")
+                else:
+                    self.logger.warning("底仓恢复操作失败，将在下次检查时重试")
+        
+        except Exception as e:
+            self.logger.error(f"安全检查待执行买入任务失败: {str(e)}")
+            # 记录详细错误信息和堆栈跟踪
+            import traceback
+            self.logger.error(f"错误详情: {traceback.format_exc()}")
+            return False
+    
+    async def _safe_check_pending_recovery_main(self):
+        try:
+            await asyncio.wait_for(self._safe_check_pending_recovery(), timeout=180)
         except asyncio.TimeoutError:
             self.logger.error("检查待执行买入任务超时，已取消操作")
             return False
