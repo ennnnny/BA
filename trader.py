@@ -379,6 +379,7 @@ class GridTrader:
                     continue
                 self.current_price = current_price
 
+                self.logger.info(f"▶ 当前价格: {current_price}")
                 # 优先检查买入卖出信号，不执行风控检查
                 # 添加重试机制确保买入卖出检测正常运行
                 sell_signal = await self._check_signal_with_retry(self._check_sell_signal, "卖出检测")

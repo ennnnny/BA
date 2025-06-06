@@ -93,33 +93,33 @@ class AdvancedRiskManager:
                 if position_ratio < self.trader.config.MIN_POSITION_RATIO:
                     self.logger.warning(f"底仓保护触发 | 当前: {position_ratio:.2%}")
                     
-                    # 检查是否在冷却期内
-                    current_time = time.time()
-                    if current_time < self.recovery_cooldown_until:
-                        cooldown_remaining = int(self.recovery_cooldown_until - current_time)
-                        self.logger.info(f"底仓恢复操作在冷却期内，还需等待 {cooldown_remaining} 秒")
+                    # # 检查是否在冷却期内
+                    # current_time = time.time()
+                    # if current_time < self.recovery_cooldown_until:
+                    #     cooldown_remaining = int(self.recovery_cooldown_until - current_time)
+                    #     self.logger.info(f"底仓恢复操作在冷却期内，还需等待 {cooldown_remaining} 秒")
                         
-                        # 修改：检查冷却期剩余时间，只在接近结束时执行待定任务
-                        if self.pending_recovery and current_time < self.pending_recovery_price_expiry:
-                            if cooldown_remaining < 300:  # 冷却期剩余不到5分钟
-                                # 检查当前价格是否已达到目标价，是则执行待定的买入任务
-                                await self._check_pending_recovery()
-                            else:
-                                self.logger.info(f"待执行买入任务暂停执行，等待冷却期结束或接近结束")
-                    else:
-                        # 当仓位低于最小值时，尝试恢复底仓
-                        recovery_result = await self.recover_min_position(position_ratio)
-                        if recovery_result:
-                            self.logger.info("底仓恢复操作已执行，等待下一次检查")
-                        else:
-                            self.logger.warning("底仓恢复操作失败，将在下次检查时重试")
+                    #     # 修改：检查冷却期剩余时间，只在接近结束时执行待定任务
+                    #     if self.pending_recovery and current_time < self.pending_recovery_price_expiry:
+                    #         if cooldown_remaining < 300:  # 冷却期剩余不到5分钟
+                    #             # 检查当前价格是否已达到目标价，是则执行待定的买入任务
+                    #             await self._check_pending_recovery()
+                    #         else:
+                    #             self.logger.info(f"待执行买入任务暂停执行，等待冷却期结束或接近结束")
+                    # else:
+                    #     # 当仓位低于最小值时，尝试恢复底仓
+                    #     recovery_result = await self.recover_min_position(position_ratio)
+                    #     if recovery_result:
+                    #         self.logger.info("底仓恢复操作已执行，等待下一次检查")
+                    #     else:
+                    #         self.logger.warning("底仓恢复操作失败，将在下次检查时重试")
                     
                     return True
                 
-                # 如果仓位已经恢复到目标值但还有待执行的买入任务，取消它
-                if position_ratio >= self.trader.config.MIN_POSITION_RATIO and self.pending_recovery:
-                    self.logger.info(f"仓位已恢复至 {position_ratio:.2%}，取消待执行的买入任务")
-                    self.pending_recovery = False
+                # # 如果仓位已经恢复到目标值但还有待执行的买入任务，取消它
+                # if position_ratio >= self.trader.config.MIN_POSITION_RATIO and self.pending_recovery:
+                #     self.logger.info(f"仓位已恢复至 {position_ratio:.2%}，取消待执行的买入任务")
+                #     self.pending_recovery = False
                 
                 if position_ratio > self.trader.config.MAX_POSITION_RATIO:
                     self.logger.warning(f"仓位超限 | 当前: {position_ratio:.2%}")
