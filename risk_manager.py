@@ -3,6 +3,7 @@ from config import MAX_POSITION_RATIO
 import time
 import numpy as np
 import asyncio  # 添加asyncio导入用于锁机制
+import aiohttp  # 添加aiohttp用于异步HTTP请求
 
 class AdvancedRiskManager:
     def __init__(self, trader):
@@ -47,6 +48,8 @@ class AdvancedRiskManager:
             'klines_1h': {'value': None, 'last_update': 0},
             'klines_4h': {'value': None, 'last_update': 0},
             'klines_1d': {'value': None, 'last_update': 0},
+            # 恐慌贪婪指数缓存
+            'fear_greed_index': {'value': 50, 'last_update': 0},
         }
         
         # 添加评分历史和仓位比例历史
@@ -67,6 +70,7 @@ class AdvancedRiskManager:
             'klines_1h': 5 * 60,  # 5分钟
             'klines_4h': 15 * 60,  # 15分钟
             'klines_1d': 60 * 60,  # 1小时
+            'fear_greed_index': 8 * 60 * 60,  # 8小时，因为指数通常每天更新一次
         }
     
     async def multi_layer_check(self):
@@ -89,37 +93,38 @@ class AdvancedRiskManager:
                         f"最小底仓比例: {self.trader.config.MIN_POSITION_RATIO:.2%}"
                     )
                     self.last_position_ratio = position_ratio
+                    
+                # 如果仓位已经恢复到目标值但还有待执行的买入任务，取消它
+                if position_ratio >= self.trader.config.MIN_POSITION_RATIO and self.pending_recovery:
+                    self.logger.info(f"仓位已恢复至 {position_ratio:.2%}，取消待执行的买入任务")
+                    self.pending_recovery = False
                 
                 if position_ratio < self.trader.config.MIN_POSITION_RATIO:
                     self.logger.warning(f"底仓保护触发 | 当前: {position_ratio:.2%}")
                     
-                    # # 检查是否在冷却期内
-                    # current_time = time.time()
-                    # if current_time < self.recovery_cooldown_until:
-                    #     cooldown_remaining = int(self.recovery_cooldown_until - current_time)
-                    #     self.logger.info(f"底仓恢复操作在冷却期内，还需等待 {cooldown_remaining} 秒")
+                    # 检查是否在冷却期内
+                    current_time = time.time()
+                    if current_time < self.recovery_cooldown_until:
+                        cooldown_remaining = int(self.recovery_cooldown_until - current_time)
+                        self.logger.info(f"底仓恢复操作在冷却期内，还需等待 {cooldown_remaining} 秒")
                         
-                    #     # 修改：检查冷却期剩余时间，只在接近结束时执行待定任务
-                    #     if self.pending_recovery and current_time < self.pending_recovery_price_expiry:
-                    #         if cooldown_remaining < 300:  # 冷却期剩余不到5分钟
-                    #             # 检查当前价格是否已达到目标价，是则执行待定的买入任务
-                    #             await self._check_pending_recovery()
-                    #         else:
-                    #             self.logger.info(f"待执行买入任务暂停执行，等待冷却期结束或接近结束")
-                    # else:
-                    #     # 当仓位低于最小值时，尝试恢复底仓
-                    #     recovery_result = await self.recover_min_position(position_ratio)
-                    #     if recovery_result:
-                    #         self.logger.info("底仓恢复操作已执行，等待下一次检查")
-                    #     else:
-                    #         self.logger.warning("底仓恢复操作失败，将在下次检查时重试")
+                        # 修改：将待定任务检查放入异步任务，不阻塞主流程
+                        if self.pending_recovery and current_time < self.pending_recovery_price_expiry:
+                            if cooldown_remaining < 300:  # 冷却期剩余不到5分钟
+                                # 创建异步任务检查并执行待定的买入任务，不等待其完成
+                                asyncio.create_task(self._safe_check_pending_recovery())
+                                self.logger.info(f"已创建异步任务检查待执行买入任务")
+                            else:
+                                self.logger.info(f"待执行买入任务暂停执行，等待冷却期结束或接近结束")
+                    else:
+                        # 当仓位低于最小值时，尝试恢复底仓
+                        recovery_result = await self.recover_min_position(position_ratio)
+                        if recovery_result:
+                            self.logger.info("底仓恢复操作已执行，等待下一次检查")
+                        else:
+                            self.logger.warning("底仓恢复操作失败，将在下次检查时重试")
                     
                     return True
-                
-                # # 如果仓位已经恢复到目标值但还有待执行的买入任务，取消它
-                # if position_ratio >= self.trader.config.MIN_POSITION_RATIO and self.pending_recovery:
-                #     self.logger.info(f"仓位已恢复至 {position_ratio:.2%}，取消待执行的买入任务")
-                #     self.pending_recovery = False
                 
                 if position_ratio > self.trader.config.MAX_POSITION_RATIO:
                     self.logger.warning(f"仓位超限 | 当前: {position_ratio:.2%}")
@@ -1365,7 +1370,7 @@ class AdvancedRiskManager:
         """检查市场情绪指标"""
         try:
             fear_greed = await self._get_fear_greed_index()
-            if fear_greed < 20:  # 极度恐惧
+            if fear_greed < 20:  # 极度恐慌
                 self.trader.config.RISK_FACTOR *= 0.5  # 降低风险系数
             elif fear_greed > 80:  # 极度贪婪
                 self.trader.config.RISK_FACTOR *= 1.2  # 提高风险系数
@@ -1558,3 +1563,105 @@ class AdvancedRiskManager:
         except Exception as e:
             self.logger.error(f"计算市场波动率失败: {e}")
             return 0.02  # 返回默认中等波动率 
+
+    async def _get_fear_greed_index(self):
+        """
+        获取加密货币市场的恐慌贪婪指数
+        恐慌贪婪指数是一个0-100的值，0表示极度恐慌，100表示极度贪婪
+        
+        Returns:
+            int: 恐慌贪婪指数值(0-100)，如果获取失败则返回50(中性值)
+        """
+        indicator_key = 'fear_greed_index'
+        
+        # 检查缓存是否需要更新
+        if not await self._should_update_indicator(indicator_key):
+            return self.indicator_cache[indicator_key]['value']
+            
+        try:
+            # 使用Alternative.me API获取恐慌贪婪指数
+            async with aiohttp.ClientSession() as session:
+                async with session.get('https://api.alternative.me/fng/?limit=1') as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data and 'data' in data and len(data['data']) > 0:
+                            # 获取最新的恐慌贪婪指数值
+                            fear_greed = int(data['data'][0]['value'])
+                            classification = data['data'][0]['value_classification']
+                            
+                            self.logger.info(f"恐慌贪婪指数: {fear_greed}/100 ({classification})")
+                            
+                            # 更新缓存
+                            self.indicator_cache[indicator_key] = {
+                                'value': fear_greed,
+                                'last_update': time.time()
+                            }
+                            
+                            return fear_greed
+                        else:
+                            self.logger.warning("恐慌贪婪指数API返回数据格式异常")
+                    else:
+                        self.logger.warning(f"恐慌贪婪指数API请求失败: HTTP {response.status}")
+            
+            # 如果API请求失败，尝试备用API
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get('https://open-api-v4.coinglass.com/api/index/fear-greed-history', 
+                                          headers={'coinglassSecret': 'your_api_key_if_needed'}) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if data and data.get('code') == '0' and 'data' in data and len(data['data']) > 0:
+                                # CoinGlass API返回格式可能不同，需要适配
+                                fear_greed_list = data['data'][0].get('data_list', [])
+                                if fear_greed_list:
+                                    fear_greed = int(fear_greed_list[0])
+                                    self.logger.info(f"恐慌贪婪指数(备用API): {fear_greed}/100")
+                                    
+                                    # 更新缓存
+                                    self.indicator_cache[indicator_key] = {
+                                        'value': fear_greed,
+                                        'last_update': time.time()
+                                    }
+                                    
+                                    return fear_greed
+            except Exception as e:
+                self.logger.error(f"备用恐慌贪婪指数API请求失败: {e}")
+            
+            # 如果有缓存，返回缓存的值
+            if indicator_key in self.indicator_cache and self.indicator_cache[indicator_key]['value'] is not None:
+                self.logger.warning("无法获取最新恐慌贪婪指数，使用缓存值")
+                return self.indicator_cache[indicator_key]['value']
+                
+            # 如果没有缓存，返回中性值50
+            self.logger.warning("无法获取恐慌贪婪指数，使用默认中性值50")
+            return 50
+            
+        except Exception as e:
+            self.logger.error(f"获取恐慌贪婪指数失败: {str(e)}")
+            
+            # 如果有缓存，返回缓存的值
+            if indicator_key in self.indicator_cache and self.indicator_cache[indicator_key]['value'] is not None:
+                return self.indicator_cache[indicator_key]['value']
+                
+            # 如果没有缓存，返回中性值50
+            return 50
+
+    async def _safe_check_pending_recovery(self):
+        """
+        安全地检查并执行待处理的底仓恢复买入任务
+        该方法包装了_check_pending_recovery，添加了额外的错误处理，
+        确保即使出现异常也不会影响主流程
+        """
+        try:
+            # 设置执行超时，防止长时间阻塞
+            result = await asyncio.wait_for(self._check_pending_recovery(), timeout=120)
+            return result
+        except asyncio.TimeoutError:
+            self.logger.error("检查待执行买入任务超时，已取消操作")
+            return False
+        except Exception as e:
+            self.logger.error(f"安全检查待执行买入任务失败: {str(e)}")
+            # 记录详细错误信息和堆栈跟踪
+            import traceback
+            self.logger.error(f"错误详情: {traceback.format_exc()}")
+            return False
