@@ -135,3 +135,6 @@ Web 界面可以让你查看当前状态、账户余额、持仓、挂单、历�
 ## 贡献
 
 欢迎提交 Pull Requests 或 Issues 来改进项目。
+
+
+[![Powered by DartNode](https://dartnode.com/branding/DN-Open-Source-sm.png)](https://dartnode.com "Powered by DartNode - Free VPS for Open Source")
