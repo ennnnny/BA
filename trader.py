@@ -60,6 +60,7 @@ class GridTrader:
         self.funding_cache_ttl = 60  # 理财余额缓存60秒
         self.position_controller_s1 = PositionControllerS1(self)
         self.buying_or_selling = False  # 不在等待买入或卖出
+        self.start_time = time.time()  # 记录系统启动时间
 
     async def initialize(self):
         if self.initialized:
@@ -266,6 +267,32 @@ class GridTrader:
         # self.logger.info("▶ 卖出检测")
         current_price = self.current_price
         initial_upper_band = self._get_upper_band()  # 初始上轨价格
+
+        position_ratio = await self.risk_manager._get_position_ratio()
+        # 使用配置中的开关控制基准价自动修正功能
+        if self.config.AUTO_ADJUST_BASE_PRICE and current_price >= initial_upper_band and position_ratio < self.config.MIN_POSITION_RATIO:
+            # 仓位低于最小仓位，直接修正基准价为当前价格
+            old_base_price = self.base_price
+            self.base_price = current_price
+            self.highest = None  # 重置最高价记录
+
+            # 记录修正日志
+            self.logger.info(
+                f"基准价修正 | "
+                f"原因: 仓位过低 ({position_ratio:.2%} < {self.config.MIN_POSITION_RATIO:.2%}) | "
+                f"旧基准价: {old_base_price:.2f} | "
+                f"新基准价: {current_price:.2f}"
+            )
+            # 发送通知
+            send_pushplus_message(
+                f"基准价自动修正\n"
+                f"原因: 仓位过低 ({position_ratio:.2%} < {self.config.MIN_POSITION_RATIO:.2%})\n"
+                f"旧基准价: {old_base_price:.2f}\n"
+                f"新基准价: {current_price:.2f}",
+                "系统通知"
+            )
+
+            return False  # 不触发卖出信号
 
         if current_price >= initial_upper_band:
             self.buying_or_selling = True  # 进入买入或卖出监测
@@ -588,6 +615,12 @@ class GridTrader:
             retry_count=(retry_count + 1, max_retries)
         )
         send_pushplus_message(msg, "交易成功通知")
+        send_ntfy_message(
+            content=msg,
+            title="交易成功通知",
+            priority="high",
+            tags="shopping_cart"
+        )
 
         # 6) 将多余资金转入理财
         await self._transfer_excess_funds()
